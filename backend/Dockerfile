@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
+# Cache-bust to force fresh COPY of requirements.txt
+ARG CACHEBUST=1
 COPY requirements.txt .
 RUN cat requirements.txt && pip install --no-cache-dir -r requirements.txt
 
