@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: zavis_linkedin
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No ports exposed — only accessible from other containers
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    # No ports exposed — only accessible from other containers
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: always
+    depends_on:
+      - db
+      - redis
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      REDIS_URL: redis://redis:6379/0
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: always
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    depends_on:
+      - db
+      - redis
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      REDIS_URL: redis://redis:6379/0
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: always
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    depends_on:
+      - db
+      - redis
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      DATABASE_URL_SYNC: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/zavis_linkedin
+      REDIS_URL: redis://redis:6379/0
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
