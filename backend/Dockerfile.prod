@@ -7,9 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN grep -v "celery-beat" requirements.txt > requirements_clean.txt && \
-    pip install --no-cache-dir -r requirements_clean.txt && \
-    rm requirements_clean.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
