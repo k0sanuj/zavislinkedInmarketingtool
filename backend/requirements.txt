@@ -1,0 +1,40 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.1
+
+# Task queue & scheduling
+celery[redis]==5.4.0
+redis==5.2.1
+celery-beat==0.0.0
+
+# Google Sheets
+gspread==6.1.4
+google-auth==2.37.0
+google-auth-oauthlib==1.2.1
+
+# LinkedIn scraping
+playwright==1.49.1
+beautifulsoup4==4.12.3
+httpx==0.28.1
+lxml==5.3.0
+
+# AI
+anthropic==0.42.0
+openai==1.58.1
+
+# Utilities
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+pandas==2.2.3
+openpyxl==3.1.5
+
+# CSV/Excel export
+python-csv==0.0.13
