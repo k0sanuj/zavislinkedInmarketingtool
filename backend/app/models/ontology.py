@@ -33,6 +33,24 @@ from app.core.ontology import ObjectStatus, MatchConfidence
 
 
 # ---------------------------------------------------------------------------
+# Object Type: GoogleOAuthToken
+# Stores Google OAuth 2.0 tokens for Google Sheets access.
+# ---------------------------------------------------------------------------
+class GoogleOAuthToken(Base):
+    __tablename__ = "google_oauth_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    access_token: Mapped[str] = mapped_column(Text)
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    token_uri: Mapped[str] = mapped_column(Text, default="https://oauth2.googleapis.com/token")
+    scopes: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
 # Object Type: LinkedInAccount
 # Represents a connected LinkedIn / Sales Navigator account.
 # ---------------------------------------------------------------------------

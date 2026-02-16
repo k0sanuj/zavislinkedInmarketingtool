@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.models.ontology import (
     ScraperJob, DataSource, Company, CompanyLinkedIn,
     LinkedInAccount, Schedule, Employee, MatchResult,
+    GoogleOAuthToken,
 )
 from app.core.ontology import ObjectStatus, ActionTypeEnum
 from app.schemas.schemas import (
@@ -80,8 +81,21 @@ async def ingest_data_source(db: AsyncSession, data_source_id: uuid.UUID) -> Dat
 
     try:
         if ds.source_type == "google_sheet" and ds.google_sheet_url:
+            # Fetch stored Google OAuth token
+            result = await db.execute(
+                select(GoogleOAuthToken).order_by(GoogleOAuthToken.created_at.desc()).limit(1)
+            )
+            token = result.scalar_one_or_none()
+            if not token:
+                raise ValueError("Google account not connected. Please connect your Google account first.")
+            token_data = {
+                "access_token": token.access_token,
+                "refresh_token": token.refresh_token,
+                "token_uri": token.token_uri,
+                "scopes": token.scopes,
+            }
             values, count = read_column_values(
-                ds.google_sheet_url, ds.column_name, ds.sheet_tab_name
+                ds.google_sheet_url, ds.column_name, token_data, ds.sheet_tab_name
             )
         elif ds.source_type == "csv_upload" and ds.raw_data:
             # For CSV, raw_data stores file path

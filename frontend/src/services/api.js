@@ -5,6 +5,11 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// Google OAuth
+export const getGoogleAuthUrl = () => api.get('/google/auth-url')
+export const getGoogleStatus = () => api.get('/google/status')
+export const disconnectGoogle = () => api.delete('/google/disconnect')
+
 // LinkedIn Accounts
 export const createLinkedInAccount = (data) => api.post('/linkedin-accounts', data)
 export const getLinkedInAccounts = () => api.get('/linkedin-accounts')

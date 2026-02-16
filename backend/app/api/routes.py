@@ -7,16 +7,21 @@ Maps HTTP operations to ontology Actions.
 
 import uuid
 from typing import List, Optional
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from google_auth_oauthlib.flow import Flow
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.models.ontology import (
     LinkedInAccount, DataSource, Company, CompanyLinkedIn,
     Employee, MatchResult, ScraperJob, Schedule,
+    GoogleOAuthToken,
 )
 from app.core.ontology import ObjectStatus
 from app.schemas.schemas import (
@@ -28,9 +33,159 @@ from app.schemas.schemas import (
 )
 from app.services import job_orchestrator
 from app.services.ai_matcher import suggest_related_roles
-from app.services.google_sheets import get_sheet_tabs, get_sheet_columns
+from app.services.google_sheets import get_sheet_tabs, get_sheet_columns, SCOPES
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Helper: get stored Google OAuth token data
+# ---------------------------------------------------------------------------
+async def _get_google_token(db: AsyncSession) -> dict:
+    """Get the most recent stored Google OAuth token."""
+    result = await db.execute(
+        select(GoogleOAuthToken).order_by(GoogleOAuthToken.created_at.desc()).limit(1)
+    )
+    token = result.scalar_one_or_none()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Google account not connected. Please connect your Google account first."
+        )
+    return {
+        "access_token": token.access_token,
+        "refresh_token": token.refresh_token,
+        "token_uri": token.token_uri,
+        "scopes": token.scopes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Google OAuth 2.0
+# ---------------------------------------------------------------------------
+@router.get("/google/auth-url")
+async def google_auth_url():
+    """Generate Google OAuth consent URL."""
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+        )
+
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=settings.GOOGLE_REDIRECT_URI,
+    )
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
+    )
+    return {"auth_url": auth_url}
+
+
+@router.get("/google/callback", response_class=HTMLResponse)
+async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
+    """Handle Google OAuth callback. Exchanges code for tokens and stores them."""
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=settings.GOOGLE_REDIRECT_URI,
+    )
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+
+    # Get user email from Google
+    email = None
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {credentials.token}"},
+            )
+            if resp.status_code == 200:
+                email = resp.json().get("email")
+    except Exception:
+        pass
+
+    # Remove any existing tokens (single-user app, keep latest only)
+    existing = await db.execute(select(GoogleOAuthToken))
+    for old_token in existing.scalars().all():
+        await db.delete(old_token)
+
+    # Store new token
+    oauth_token = GoogleOAuthToken(
+        email=email,
+        access_token=credentials.token,
+        refresh_token=credentials.refresh_token,
+        token_uri=credentials.token_uri,
+        scopes=credentials.scopes if credentials.scopes else SCOPES,
+        expires_at=credentials.expiry if credentials.expiry else None,
+    )
+    db.add(oauth_token)
+
+    # Return HTML that closes the popup and notifies the parent window
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Google Connected</title></head>
+    <body>
+        <h2 style="font-family: sans-serif; text-align: center; margin-top: 40px;">
+            Google account connected successfully!
+        </h2>
+        <p style="font-family: sans-serif; text-align: center; color: #666;">
+            This window will close automatically...
+        </p>
+        <script>
+            if (window.opener) {
+                window.opener.postMessage({ type: 'google-oauth-success' }, '*');
+            }
+            setTimeout(() => window.close(), 1500);
+        </script>
+    </body>
+    </html>
+    """)
+
+
+@router.get("/google/status")
+async def google_status(db: AsyncSession = Depends(get_db)):
+    """Check if Google account is connected."""
+    result = await db.execute(
+        select(GoogleOAuthToken).order_by(GoogleOAuthToken.created_at.desc()).limit(1)
+    )
+    token = result.scalar_one_or_none()
+    if not token:
+        return {"connected": False}
+    return {
+        "connected": True,
+        "email": token.email,
+        "connected_at": token.created_at.isoformat() if token.created_at else None,
+    }
+
+
+@router.delete("/google/disconnect")
+async def google_disconnect(db: AsyncSession = Depends(get_db)):
+    """Disconnect Google account by removing stored tokens."""
+    result = await db.execute(select(GoogleOAuthToken))
+    for token in result.scalars().all():
+        await db.delete(token)
+    return {"status": "disconnected"}
 
 
 # ---------------------------------------------------------------------------
@@ -173,20 +328,22 @@ async def list_data_source_companies(
 
 
 @router.get("/sheets/tabs")
-async def get_google_sheet_tabs(url: str):
-    """Get tabs from a Google Sheet URL."""
+async def get_google_sheet_tabs(url: str, db: AsyncSession = Depends(get_db)):
+    """Get tabs from a Google Sheet URL (requires connected Google account)."""
+    token_data = await _get_google_token(db)
     try:
-        tabs = get_sheet_tabs(url)
+        tabs = get_sheet_tabs(url, token_data)
         return {"tabs": tabs}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/sheets/columns")
-async def get_google_sheet_columns(url: str, tab: Optional[str] = None):
-    """Get column headers from a Google Sheet."""
+async def get_google_sheet_columns(url: str, tab: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    """Get column headers from a Google Sheet (requires connected Google account)."""
+    token_data = await _get_google_token(db)
     try:
-        columns = get_sheet_columns(url, tab)
+        columns = get_sheet_columns(url, token_data, tab)
         return {"columns": columns}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -9,6 +9,7 @@ from app.core.database import Base
 from app.models.ontology import (  # noqa: F401
     LinkedInAccount, DataSource, Company, CompanyLinkedIn,
     Employee, MatchResult, Schedule, ScraperJob,
+    GoogleOAuthToken,
 )
 
 config = context.config

@@ -17,8 +17,13 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Google Sheets
+    # Google Sheets (service account — legacy, optional)
     GOOGLE_CREDENTIALS_JSON: str = "credentials.json"
+
+    # Google OAuth 2.0 (user-based auth via browser)
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/google/callback"
 
     # LinkedIn cookies (Sales Navigator auth)
     LINKEDIN_LI_AT_COOKIE: str = ""

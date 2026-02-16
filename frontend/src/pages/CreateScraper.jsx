@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createDataSource, uploadCsvDataSource,
   getLinkedInAccounts, createScraperJob, launchScraperJob,
   getSheetTabs, getSheetColumns, suggestRoles,
+  getGoogleAuthUrl, getGoogleStatus, disconnectGoogle,
 } from '../services/api'
 
 const STEPS = [
@@ -19,6 +20,11 @@ function CreateScraper() {
   const [accounts, setAccounts] = useState([])
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+
+  // Google OAuth state
+  const [googleConnected, setGoogleConnected] = useState(false)
+  const [googleEmail, setGoogleEmail] = useState(null)
+  const [googleLoading, setGoogleLoading] = useState(true)
 
   // Step 1: Data Source
   const [sourceType, setSourceType] = useState('google_sheet')
@@ -47,26 +53,99 @@ function CreateScraper() {
   const [timesPerDay, setTimesPerDay] = useState(1)
   const [suggestedRoles, setSuggestedRoles] = useState([])
 
+  const checkGoogleStatus = useCallback(async () => {
+    try {
+      const res = await getGoogleStatus()
+      setGoogleConnected(res.data.connected)
+      setGoogleEmail(res.data.email || null)
+    } catch {
+      setGoogleConnected(false)
+    }
+    setGoogleLoading(false)
+  }, [])
+
   useEffect(() => {
     getLinkedInAccounts().then(res => setAccounts(res.data)).catch(() => {})
-  }, [])
+    checkGoogleStatus()
+  }, [checkGoogleStatus])
+
+  // Listen for OAuth popup success message
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.data?.type === 'google-oauth-success') {
+        checkGoogleStatus()
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [checkGoogleStatus])
+
+  const handleConnectGoogle = async () => {
+    setError(null)
+    try {
+      const res = await getGoogleAuthUrl()
+      const authUrl = res.data.auth_url
+      // Open in popup
+      const w = 500, h = 600
+      const left = window.screenX + (window.outerWidth - w) / 2
+      const top = window.screenY + (window.outerHeight - h) / 2
+      const popup = window.open(
+        authUrl,
+        'google-oauth',
+        `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`
+      )
+      // Fallback: poll for popup close
+      if (popup) {
+        const timer = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(timer)
+            checkGoogleStatus()
+          }
+        }, 500)
+      }
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to start Google authorization.')
+    }
+  }
+
+  const handleDisconnectGoogle = async () => {
+    try {
+      await disconnectGoogle()
+      setGoogleConnected(false)
+      setGoogleEmail(null)
+      setTabs([])
+      setColumns([])
+    } catch {
+      setError('Failed to disconnect Google account.')
+    }
+  }
 
   const loadTabs = async () => {
     if (!sheetUrl) return
+    setError(null)
     try {
       const res = await getSheetTabs(sheetUrl)
       setTabs(res.data.tabs || [])
     } catch (e) {
-      setError('Failed to load sheet tabs. Check the URL and Google credentials.')
+      if (e.response?.status === 401) {
+        setError('Google account not connected. Please connect your Google account first.')
+      } else {
+        setError(e.response?.data?.detail || 'Failed to load sheet tabs. Check the URL and make sure the sheet is accessible.')
+      }
     }
   }
 
   const loadColumns = async () => {
+    setError(null)
     try {
       const res = await getSheetColumns(sheetUrl, selectedTab || undefined)
       setColumns(res.data.columns || [])
     } catch (e) {
-      setError('Failed to load columns.')
+      if (e.response?.status === 401) {
+        setError('Google account not connected. Please connect your Google account first.')
+      } else {
+        setError(e.response?.data?.detail || 'Failed to load columns.')
+      }
     }
   }
 
@@ -192,36 +271,76 @@ function CreateScraper() {
 
           {sourceType === 'google_sheet' && (
             <>
+              {/* Google Account Connection */}
               <div className="form-group">
-                <label>Google Sheet URL</label>
-                <div className="flex gap-2">
-                  <input className="form-input" value={sheetUrl} onChange={e => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." />
-                  <button className="btn btn-outline btn-sm" onClick={loadTabs}>Load</button>
-                </div>
+                <label>Google Account</label>
+                {googleLoading ? (
+                  <p className="text-sm text-muted">Checking Google connection...</p>
+                ) : googleConnected ? (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 14px', borderRadius: 8,
+                    background: 'var(--success-bg, #e6f9e6)', border: '1px solid var(--success, #22c55e)',
+                  }}>
+                    <span style={{ color: 'var(--success, #22c55e)', fontWeight: 600, fontSize: 18 }}>&#10003;</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500 }}>Connected{googleEmail ? ` as ${googleEmail}` : ''}</div>
+                      <div className="text-sm text-muted">Google Sheets access authorized</div>
+                    </div>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                      onClick={handleDisconnectGoogle}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <button className="btn btn-primary" onClick={handleConnectGoogle}>
+                      Connect Google Account
+                    </button>
+                    <p className="text-sm text-muted" style={{ marginTop: 8 }}>
+                      Sign in with Google to allow access to your Google Sheets.
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {tabs.length > 0 && (
-                <div className="form-group">
-                  <label>Sheet Tab</label>
-                  <select className="form-select" value={selectedTab} onChange={e => { setSelectedTab(e.target.value); loadColumns(); }}>
-                    <option value="">First tab</option>
-                    {tabs.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              )}
+              {googleConnected && (
+                <>
+                  <div className="form-group">
+                    <label>Google Sheet URL</label>
+                    <div className="flex gap-2">
+                      <input className="form-input" value={sheetUrl} onChange={e => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." />
+                      <button className="btn btn-outline btn-sm" onClick={loadTabs}>Load</button>
+                    </div>
+                  </div>
 
-              {(tabs.length > 0 || sheetUrl) && (
-                <button className="btn btn-outline btn-sm mb-4" onClick={loadColumns}>Load Columns</button>
-              )}
+                  {tabs.length > 0 && (
+                    <div className="form-group">
+                      <label>Sheet Tab</label>
+                      <select className="form-select" value={selectedTab} onChange={e => { setSelectedTab(e.target.value); loadColumns(); }}>
+                        <option value="">First tab</option>
+                        {tabs.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                  )}
 
-              {columns.length > 0 && (
-                <div className="form-group">
-                  <label>Select Column</label>
-                  <select className="form-select" value={selectedColumn} onChange={e => setSelectedColumn(e.target.value)}>
-                    <option value="">Select column...</option>
-                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
+                  {(tabs.length > 0 || sheetUrl) && (
+                    <button className="btn btn-outline btn-sm mb-4" onClick={loadColumns}>Load Columns</button>
+                  )}
+
+                  {columns.length > 0 && (
+                    <div className="form-group">
+                      <label>Select Column</label>
+                      <select className="form-select" value={selectedColumn} onChange={e => setSelectedColumn(e.target.value)}>
+                        <option value="">Select column...</option>
+                        {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}

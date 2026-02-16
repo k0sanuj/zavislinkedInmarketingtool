@@ -1,16 +1,17 @@
 """
 Service: Google Sheets Integration
 
-Connects to Google Sheets API to read company names/URLs from a user's
-spreadsheet. Supports selecting specific tabs and columns.
+Connects to Google Sheets API using OAuth 2.0 user tokens to read company
+names/URLs from a user's spreadsheet. Supports selecting specific tabs and columns.
 """
 
 import re
 import logging
 from typing import List, Optional, Tuple
+from datetime import datetime
 
 import gspread
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
 
 from app.core.config import settings
 
@@ -19,13 +20,20 @@ logger = logging.getLogger(__name__)
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
 ]
 
 
-def _get_gspread_client() -> gspread.Client:
-    """Authenticate with Google Sheets API using service account credentials."""
-    creds = Credentials.from_service_account_file(
-        settings.GOOGLE_CREDENTIALS_JSON, scopes=SCOPES
+def _get_gspread_client_oauth(token_data: dict) -> gspread.Client:
+    """Authenticate with Google Sheets API using stored OAuth tokens."""
+    creds = Credentials(
+        token=token_data["access_token"],
+        refresh_token=token_data.get("refresh_token"),
+        token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET,
+        scopes=token_data.get("scopes", SCOPES),
     )
     return gspread.authorize(creds)
 
@@ -38,17 +46,17 @@ def extract_sheet_id(url: str) -> str:
     return match.group(1)
 
 
-def get_sheet_tabs(sheet_url: str) -> List[str]:
+def get_sheet_tabs(sheet_url: str, token_data: dict) -> List[str]:
     """Return the list of tab/worksheet names in a Google Sheet."""
-    client = _get_gspread_client()
+    client = _get_gspread_client_oauth(token_data)
     sheet_id = extract_sheet_id(sheet_url)
     spreadsheet = client.open_by_key(sheet_id)
     return [ws.title for ws in spreadsheet.worksheets()]
 
 
-def get_sheet_columns(sheet_url: str, tab_name: Optional[str] = None) -> List[str]:
+def get_sheet_columns(sheet_url: str, token_data: dict, tab_name: Optional[str] = None) -> List[str]:
     """Return column headers from the first row of a sheet tab."""
-    client = _get_gspread_client()
+    client = _get_gspread_client_oauth(token_data)
     sheet_id = extract_sheet_id(sheet_url)
     spreadsheet = client.open_by_key(sheet_id)
 
@@ -64,6 +72,7 @@ def get_sheet_columns(sheet_url: str, tab_name: Optional[str] = None) -> List[st
 def read_column_values(
     sheet_url: str,
     column_name: str,
+    token_data: dict,
     tab_name: Optional[str] = None,
 ) -> Tuple[List[str], int]:
     """
@@ -72,7 +81,7 @@ def read_column_values(
     Returns:
         Tuple of (values list, total row count)
     """
-    client = _get_gspread_client()
+    client = _get_gspread_client_oauth(token_data)
     sheet_id = extract_sheet_id(sheet_url)
     spreadsheet = client.open_by_key(sheet_id)
 
