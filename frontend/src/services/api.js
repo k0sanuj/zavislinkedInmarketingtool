@@ -31,8 +31,12 @@ export const getSheetColumns = (url, tab) =>
 
 // Scraper Jobs
 export const createScraperJob = (data) => api.post('/scraper-jobs', data)
+export const createCompanyDiscovery = (data) => api.post('/scraper-jobs/company-discovery', data)
+export const createEmployeeScraping = (data) => api.post('/scraper-jobs/employee-scraping', data)
 export const getScraperJobs = () => api.get('/scraper-jobs')
 export const getScraperJob = (id) => api.get(`/scraper-jobs/${id}`)
+export const getJobCompanies = (id, filter = 'all') =>
+  api.get(`/scraper-jobs/${id}/companies`, { params: { filter } })
 export const launchScraperJob = (id) => api.post(`/scraper-jobs/${id}/launch`)
 export const pauseScraperJob = (id) => api.post(`/scraper-jobs/${id}/pause`)
 export const getJobSummary = (id) => api.get(`/scraper-jobs/${id}/summary`)
@@ -42,5 +46,7 @@ export const getJobEmployees = (id, matchedOnly = false) =>
 // AI
 export const suggestRoles = (jobTitles, prompt) =>
   api.post('/ai/suggest-roles', { job_titles: jobTitles, prompt })
+export const suggestRolesFromGoal = (goalDescription, industry) =>
+  api.post('/ai/suggest-roles-from-goal', { goal_description: goalDescription, industry })
 
 export default api

@@ -2,15 +2,14 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   createDataSource, uploadCsvDataSource,
-  getLinkedInAccounts, createScraperJob, launchScraperJob,
-  getSheetTabs, getSheetColumns, suggestRoles,
+  getLinkedInAccounts, createCompanyDiscovery, launchScraperJob,
+  getSheetTabs, getSheetColumns,
   getGoogleAuthUrl, getGoogleStatus, disconnectGoogle,
 } from '../services/api'
 
 const STEPS = [
   'Data Source',
   'LinkedIn Account',
-  'Scraper Settings',
   'Review & Launch',
 ]
 
@@ -38,20 +37,13 @@ function CreateScraper() {
   const [manualUrls, setManualUrls] = useState('')
   const [dataSourceId, setDataSourceId] = useState(null)
   const [sourceName, setSourceName] = useState('')
+  const [maxCompanies, setMaxCompanies] = useState(50)
 
   // Step 2: LinkedIn Account
   const [selectedAccountId, setSelectedAccountId] = useState('')
 
-  // Step 3: Settings
+  // Job name
   const [jobName, setJobName] = useState('')
-  const [maxEmployees, setMaxEmployees] = useState(30)
-  const [maxCompanies, setMaxCompanies] = useState(50)
-  const [targetTitles, setTargetTitles] = useState('')
-  const [useAiMatching, setUseAiMatching] = useState(true)
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [frequency, setFrequency] = useState('once')
-  const [timesPerDay, setTimesPerDay] = useState(1)
-  const [suggestedRoles, setSuggestedRoles] = useState([])
 
   const checkGoogleStatus = useCallback(async () => {
     try {
@@ -69,12 +61,9 @@ function CreateScraper() {
     checkGoogleStatus()
   }, [checkGoogleStatus])
 
-  // Listen for OAuth popup success message
   useEffect(() => {
     const handler = (event) => {
-      if (event.data?.type === 'google-oauth-success') {
-        checkGoogleStatus()
-      }
+      if (event.data?.type === 'google-oauth-success') checkGoogleStatus()
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
@@ -84,23 +73,16 @@ function CreateScraper() {
     setError(null)
     try {
       const res = await getGoogleAuthUrl()
-      const authUrl = res.data.auth_url
-      // Open in popup
       const w = 500, h = 600
       const left = window.screenX + (window.outerWidth - w) / 2
       const top = window.screenY + (window.outerHeight - h) / 2
       const popup = window.open(
-        authUrl,
-        'google-oauth',
+        res.data.auth_url, 'google-oauth',
         `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`
       )
-      // Fallback: poll for popup close
       if (popup) {
         const timer = setInterval(() => {
-          if (popup.closed) {
-            clearInterval(timer)
-            checkGoogleStatus()
-          }
+          if (popup.closed) { clearInterval(timer); checkGoogleStatus() }
         }, 500)
       }
     } catch (e) {
@@ -111,13 +93,8 @@ function CreateScraper() {
   const handleDisconnectGoogle = async () => {
     try {
       await disconnectGoogle()
-      setGoogleConnected(false)
-      setGoogleEmail(null)
-      setTabs([])
-      setColumns([])
-    } catch {
-      setError('Failed to disconnect Google account.')
-    }
+      setGoogleConnected(false); setGoogleEmail(null); setTabs([]); setColumns([])
+    } catch { setError('Failed to disconnect Google account.') }
   }
 
   const loadTabs = async () => {
@@ -127,11 +104,9 @@ function CreateScraper() {
       const res = await getSheetTabs(sheetUrl)
       setTabs(res.data.tabs || [])
     } catch (e) {
-      if (e.response?.status === 401) {
-        setError('Google account not connected. Please connect your Google account first.')
-      } else {
-        setError(e.response?.data?.detail || 'Failed to load sheet tabs. Check the URL and make sure the sheet is accessible.')
-      }
+      setError(e.response?.status === 401
+        ? 'Google account not connected.'
+        : (e.response?.data?.detail || 'Failed to load sheet tabs.'))
     }
   }
 
@@ -141,28 +116,14 @@ function CreateScraper() {
       const res = await getSheetColumns(sheetUrl, selectedTab || undefined)
       setColumns(res.data.columns || [])
     } catch (e) {
-      if (e.response?.status === 401) {
-        setError('Google account not connected. Please connect your Google account first.')
-      } else {
-        setError(e.response?.data?.detail || 'Failed to load columns.')
-      }
-    }
-  }
-
-  const handleSuggestRoles = async () => {
-    if (!targetTitles.trim()) return
-    try {
-      const titles = targetTitles.split(',').map(t => t.trim()).filter(Boolean)
-      const res = await suggestRoles(titles)
-      setSuggestedRoles(res.data.suggested_roles || [])
-    } catch {
-      // Ignore AI errors silently
+      setError(e.response?.status === 401
+        ? 'Google account not connected.'
+        : (e.response?.data?.detail || 'Failed to load columns.'))
     }
   }
 
   const handleCreateDataSource = async () => {
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     try {
       let res
       if (sourceType === 'google_sheet') {
@@ -182,7 +143,6 @@ function CreateScraper() {
         formData.append('file', csvFile)
         res = await uploadCsvDataSource(formData)
       } else {
-        const values = manualUrls.split('\n').map(u => u.trim()).filter(Boolean)
         res = await createDataSource({
           name: sourceName || 'Manual URLs',
           source_type: 'manual',
@@ -197,32 +157,19 @@ function CreateScraper() {
     setLoading(false)
   }
 
-  const handleCreateAndLaunch = async () => {
-    setLoading(true)
-    setError(null)
+  const handleLaunchDiscovery = async () => {
+    setLoading(true); setError(null)
     try {
-      const titles = targetTitles
-        ? targetTitles.split(',').map(t => t.trim()).filter(Boolean)
-        : null
-
-      const jobRes = await createScraperJob({
-        name: jobName || 'Scraper Job',
+      const jobRes = await createCompanyDiscovery({
+        name: jobName || `Company Discovery - ${sourceName || 'Untitled'}`,
         data_source_id: dataSourceId,
         linkedin_account_id: selectedAccountId,
-        max_employees_per_company: maxEmployees,
         max_companies_per_launch: maxCompanies,
-        target_job_titles: titles,
-        use_ai_matching: useAiMatching,
-        ai_matching_prompt: aiPrompt || undefined,
-        schedule_frequency: frequency,
-        schedule_times_per_day: timesPerDay,
       })
-
-      // Launch immediately
       await launchScraperJob(jobRes.data.id)
       navigate(`/scrapers/${jobRes.data.id}`)
     } catch (e) {
-      setError(e.response?.data?.detail || 'Failed to create job')
+      setError(e.response?.data?.detail || 'Failed to launch discovery job')
     }
     setLoading(false)
   }
@@ -230,11 +177,10 @@ function CreateScraper() {
   return (
     <div>
       <div className="page-header">
-        <h1>Create Scraper</h1>
-        <p>Set up a new LinkedIn company scraper in 4 steps</p>
+        <h1>Discover Company LinkedIn Pages</h1>
+        <p>Upload your company list and we'll find their LinkedIn pages, employee counts, and more</p>
       </div>
 
-      {/* Steps indicator */}
       <div className="steps">
         {STEPS.map((s, i) => (
           <div key={i} className={`step ${i === step ? 'active' : ''} ${i < step ? 'completed' : ''}`}>
@@ -253,7 +199,7 @@ function CreateScraper() {
       {/* Step 1: Data Source */}
       {step === 0 && (
         <div className="card">
-          <h2 className="card-title mb-4">Connect Your Data Source</h2>
+          <h2 className="card-title mb-4">Upload Your Company List</h2>
 
           <div className="form-group">
             <label>Source Name</label>
@@ -271,7 +217,6 @@ function CreateScraper() {
 
           {sourceType === 'google_sheet' && (
             <>
-              {/* Google Account Connection */}
               <div className="form-group">
                 <label>Google Account</label>
                 {googleLoading ? (
@@ -287,22 +232,12 @@ function CreateScraper() {
                       <div style={{ fontWeight: 500 }}>Connected{googleEmail ? ` as ${googleEmail}` : ''}</div>
                       <div className="text-sm text-muted">Google Sheets access authorized</div>
                     </div>
-                    <button
-                      className="btn btn-outline btn-sm"
-                      style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
-                      onClick={handleDisconnectGoogle}
-                    >
-                      Disconnect
-                    </button>
+                    <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }} onClick={handleDisconnectGoogle}>Disconnect</button>
                   </div>
                 ) : (
                   <div>
-                    <button className="btn btn-primary" onClick={handleConnectGoogle}>
-                      Connect Google Account
-                    </button>
-                    <p className="text-sm text-muted" style={{ marginTop: 8 }}>
-                      Sign in with Google to allow access to your Google Sheets.
-                    </p>
+                    <button className="btn btn-primary" onClick={handleConnectGoogle}>Connect Google Account</button>
+                    <p className="text-sm text-muted" style={{ marginTop: 8 }}>Sign in with Google to allow access to your Google Sheets.</p>
                   </div>
                 )}
               </div>
@@ -316,21 +251,18 @@ function CreateScraper() {
                       <button className="btn btn-outline btn-sm" onClick={loadTabs}>Load</button>
                     </div>
                   </div>
-
                   {tabs.length > 0 && (
                     <div className="form-group">
                       <label>Sheet Tab</label>
-                      <select className="form-select" value={selectedTab} onChange={e => { setSelectedTab(e.target.value); loadColumns(); }}>
+                      <select className="form-select" value={selectedTab} onChange={e => { setSelectedTab(e.target.value); loadColumns() }}>
                         <option value="">First tab</option>
                         {tabs.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
                   )}
-
                   {(tabs.length > 0 || sheetUrl) && (
                     <button className="btn btn-outline btn-sm mb-4" onClick={loadColumns}>Load Columns</button>
                   )}
-
                   {columns.length > 0 && (
                     <div className="form-group">
                       <label>Select Column</label>
@@ -382,17 +314,13 @@ function CreateScraper() {
       {/* Step 2: LinkedIn Account */}
       {step === 1 && (
         <div className="card">
-          <h2 className="card-title mb-4">Connect LinkedIn Account</h2>
-          <p className="text-sm text-muted mb-4">
-            Select a connected LinkedIn Sales Navigator account to use for scraping.
-          </p>
+          <h2 className="card-title mb-4">Select LinkedIn Account</h2>
+          <p className="text-sm text-muted mb-4">Choose which LinkedIn account to use for discovering company pages.</p>
 
           {accounts.length === 0 ? (
             <div>
               <p className="text-muted">No LinkedIn accounts connected yet.</p>
-              <button className="btn btn-outline mt-4" onClick={() => navigate('/accounts')}>
-                Connect Account
-              </button>
+              <button className="btn btn-outline mt-4" onClick={() => navigate('/accounts')}>Connect Account</button>
             </div>
           ) : (
             <>
@@ -401,156 +329,48 @@ function CreateScraper() {
                 <select className="form-select" value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}>
                   <option value="">Select account...</option>
                   {accounts.map(a => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} {a.is_sales_navigator ? '(Sales Navigator)' : ''}
-                    </option>
+                    <option key={a.id} value={a.id}>{a.name} {a.is_sales_navigator ? '(Sales Nav)' : ''}</option>
                   ))}
                 </select>
               </div>
               <div className="flex gap-2 mt-4">
                 <button className="btn btn-outline" onClick={() => setStep(0)}>Back</button>
-                <button className="btn btn-primary" onClick={() => setStep(2)} disabled={!selectedAccountId}>
-                  Continue
-                </button>
+                <button className="btn btn-primary" onClick={() => setStep(2)} disabled={!selectedAccountId}>Continue</button>
               </div>
             </>
           )}
         </div>
       )}
 
-      {/* Step 3: Settings */}
+      {/* Step 3: Review & Launch */}
       {step === 2 && (
         <div className="card">
-          <h2 className="card-title mb-4">Scraper Settings</h2>
+          <h2 className="card-title mb-4">Review & Launch Discovery</h2>
 
           <div className="form-group">
             <label>Job Name</label>
-            <input className="form-input" value={jobName} onChange={e => setJobName(e.target.value)} placeholder="e.g. Dubai Dental Clinics Scrape" />
-          </div>
-
-          <div className="flex gap-4">
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max Employees per Company</label>
-              <input className="form-input" type="number" value={maxEmployees} onChange={e => setMaxEmployees(Number(e.target.value))} />
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max Companies per Launch</label>
-              <input className="form-input" type="number" value={maxCompanies} onChange={e => setMaxCompanies(Number(e.target.value))} />
-            </div>
+            <input className="form-input" value={jobName} onChange={e => setJobName(e.target.value)} placeholder={`Company Discovery - ${sourceName || 'Untitled'}`} />
           </div>
 
           <div className="form-group">
-            <label>Target Job Titles (comma-separated)</label>
-            <div className="flex gap-2">
-              <input className="form-input" value={targetTitles} onChange={e => setTargetTitles(e.target.value)} placeholder="e.g. Clinic Administrator, Practice Manager, Operations Director" />
-              <button className="btn btn-outline btn-sm" onClick={handleSuggestRoles}>AI Suggest</button>
-            </div>
-            {suggestedRoles.length > 0 && (
-              <div className="mt-4">
-                <p className="text-sm text-muted mb-4">AI-suggested related roles (click to add):</p>
-                <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
-                  {suggestedRoles.map(role => (
-                    <button
-                      key={role}
-                      className="btn btn-outline btn-sm"
-                      onClick={() => {
-                        const current = targetTitles ? targetTitles + ', ' : ''
-                        setTargetTitles(current + role)
-                      }}
-                    >
-                      + {role}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            <label>Max Companies to Process</label>
+            <input className="form-input" type="number" value={maxCompanies} onChange={e => setMaxCompanies(Number(e.target.value))} />
           </div>
 
-          <div className="form-group">
-            <label className="flex items-center gap-2">
-              <label className="toggle">
-                <input type="checkbox" checked={useAiMatching} onChange={e => setUseAiMatching(e.target.checked)} />
-                <span className="toggle-slider"></span>
-              </label>
-              Use AI Role Matching
-            </label>
-          </div>
-
-          {useAiMatching && (
-            <div className="form-group">
-              <label>Custom AI Matching Prompt (optional)</label>
-              <textarea className="form-textarea" value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Find decision-makers in clinic operations, purchasing, and administration" />
-            </div>
-          )}
-
-          <h3 className="card-title mt-4 mb-4">Schedule</h3>
-          <div className="flex gap-4">
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Frequency</label>
-              <select className="form-select" value={frequency} onChange={e => setFrequency(e.target.value)}>
-                <option value="once">Run Once</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
-            </div>
-            {frequency !== 'once' && (
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Times per Day</label>
-                <input className="form-input" type="number" min={1} max={24} value={timesPerDay} onChange={e => setTimesPerDay(Number(e.target.value))} />
-              </div>
-            )}
+          <div className="card" style={{ background: 'var(--bg-primary)', marginTop: 16 }}>
+            <h3 className="text-sm" style={{ fontWeight: 600, marginBottom: 8 }}>What happens next:</h3>
+            <ol className="text-sm text-muted" style={{ paddingLeft: 20, lineHeight: 1.8 }}>
+              <li>We search LinkedIn for each company in your list</li>
+              <li>For each match, we scrape the company's LinkedIn page (name, industry, employee count, etc.)</li>
+              <li>Results appear in a table with "With LinkedIn" and "Without LinkedIn" tabs</li>
+              <li>From there, you can select companies and scrape their employees</li>
+            </ol>
           </div>
 
           <div className="flex gap-2 mt-4">
             <button className="btn btn-outline" onClick={() => setStep(1)}>Back</button>
-            <button className="btn btn-primary" onClick={() => setStep(3)}>Review</button>
-          </div>
-        </div>
-      )}
-
-      {/* Step 4: Review & Launch */}
-      {step === 3 && (
-        <div className="card">
-          <h2 className="card-title mb-4">Review & Launch</h2>
-
-          <div className="stats-grid">
-            <div className="stat-card">
-              <div className="stat-label">Job Name</div>
-              <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>{jobName || 'Unnamed Job'}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Max Employees/Company</div>
-              <div className="stat-value">{maxEmployees}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Max Companies</div>
-              <div className="stat-value">{maxCompanies}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Schedule</div>
-              <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>{frequency}</div>
-            </div>
-          </div>
-
-          {targetTitles && (
-            <div className="mb-4">
-              <span className="text-sm text-muted">Target Titles: </span>
-              <span className="text-sm">{targetTitles}</span>
-            </div>
-          )}
-
-          <div className="mb-4">
-            <span className="text-sm text-muted">AI Matching: </span>
-            <span className={`badge ${useAiMatching ? 'badge-success' : 'badge-muted'}`}>
-              {useAiMatching ? 'Enabled' : 'Disabled'}
-            </span>
-          </div>
-
-          <div className="flex gap-2 mt-4">
-            <button className="btn btn-outline" onClick={() => setStep(2)}>Back</button>
-            <button className="btn btn-success" onClick={handleCreateAndLaunch} disabled={loading}>
-              {loading ? 'Launching...' : 'Launch Scraper'}
+            <button className="btn btn-success" onClick={handleLaunchDiscovery} disabled={loading}>
+              {loading ? 'Launching...' : 'Launch Company Discovery'}
             </button>
           </div>
         </div>

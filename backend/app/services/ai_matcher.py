@@ -116,6 +116,48 @@ Suggest additional related job titles that would be relevant for B2B outreach.""
         return [], f"AI suggestion failed: {e}"
 
 
+GOAL_BASED_ROLE_PROMPT = """You are an expert in B2B sales targeting and job title research.
+The user will describe their goal (e.g., who they want to reach, what they want to sell, what industry).
+Your job is to suggest the most relevant job titles to target on LinkedIn for this goal.
+
+Think about:
+- Decision-makers who control budgets and purchasing
+- Influencers who recommend products/services
+- End-users who would champion the product internally
+- Titles across different company sizes (SMB vs Enterprise)
+- Regional variations (US, UK, Middle East, etc.)
+
+Respond with JSON only:
+{
+  "suggested_roles": ["Role 1", "Role 2", ...],
+  "reasoning": "Brief explanation of your role selection strategy"
+}"""
+
+
+async def suggest_roles_from_goal(
+    goal_description: str,
+    industry: Optional[str] = None,
+) -> Tuple[List[str], str]:
+    """
+    AI suggests job titles based on user's described goals.
+    E.g. "I want to reach people who buy dental equipment" →
+    ["Procurement Manager", "Office Manager", "Practice Owner", ...]
+    """
+    user_message = f"""Goal: {goal_description}
+{f'Industry: {industry}' if industry else ''}
+
+What job titles should I target on LinkedIn to achieve this goal? Suggest 8-15 roles."""
+
+    try:
+        result = await _call_llm(GOAL_BASED_ROLE_PROMPT, user_message)
+        import json
+        parsed = json.loads(result)
+        return parsed.get("suggested_roles", []), parsed.get("reasoning", "")
+    except Exception as e:
+        logger.error(f"AI goal-based role suggestion failed: {e}")
+        return [], f"AI suggestion failed: {e}"
+
+
 def _rule_based_match(
     employee_title: str, target_roles: List[str]
 ) -> Tuple[bool, MatchConfidence, str, Optional[str]]:

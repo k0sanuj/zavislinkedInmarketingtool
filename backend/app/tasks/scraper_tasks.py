@@ -1,9 +1,9 @@
 """
 Celery Tasks: Scraper Job Orchestration
 
-These tasks run asynchronously to:
-1. Process a scraper job (find LinkedIn URLs, scrape employees)
-2. Check scheduled jobs and launch them if due
+Two-phase scraping pipeline:
+Phase 1: Company Discovery — find LinkedIn URLs and company profiles
+Phase 2: Employee Scraping — scrape employees from selected companies
 """
 
 import asyncio
@@ -33,41 +33,32 @@ def _get_sync_session():
     return Session(engine)
 
 
-@celery_app.task(bind=True, name="app.tasks.scraper_tasks.run_scraper_job")
-def run_scraper_job(self, job_id: str):
-    """
-    Main scraper job task. Orchestrates the full pipeline:
-    1. Load job config and data source
-    2. For each company: search for LinkedIn URL
-    3. Scrape company profile
-    4. Scrape employees
-    5. Run AI role matching
-    6. Update stats
-    """
+# ---------------------------------------------------------------------------
+# Phase 1: Company Discovery
+# ---------------------------------------------------------------------------
+@celery_app.task(bind=True, name="app.tasks.scraper_tasks.run_company_discovery")
+def run_company_discovery(self, job_id: str):
+    """Find LinkedIn URLs and scrape company profiles only (no employees)."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_run_scraper_job_async(self, job_id))
+        loop.run_until_complete(_run_company_discovery_async(self, job_id))
     finally:
         loop.close()
 
 
-async def _run_scraper_job_async(task, job_id: str):
-    """Async implementation of the scraper job."""
-    from app.models.ontology import (
-        ScraperJob, Company, CompanyLinkedIn, Employee, MatchResult
-    )
+async def _run_company_discovery_async(task, job_id: str):
+    """Phase 1: Find LinkedIn URLs and scrape basic company data."""
+    from app.models.ontology import ScraperJob, Company, CompanyLinkedIn
 
     session = _get_sync_session()
 
     try:
-        # Load job with relationships
         job = session.get(ScraperJob, uuid.UUID(job_id))
         if not job:
             logger.error(f"Job {job_id} not found")
             return
 
-        # Update job status
         job.status = ObjectStatus.PROCESSING
         job.last_launched_at = datetime.utcnow()
         session.commit()
@@ -87,31 +78,29 @@ async def _run_scraper_job_async(task, job_id: str):
         total = len(companies)
         matched = 0
         not_found = 0
-        employees_scraped = 0
 
         for i, company in enumerate(companies):
             if i >= job.max_companies_per_launch:
                 break
 
-            # Update task progress
             task.update_state(
                 state="PROGRESS",
                 meta={
                     "current": i + 1,
                     "total": min(total, job.max_companies_per_launch),
                     "company": company.name,
+                    "phase": "company_discovery",
                 },
             )
 
             try:
-                # Step 1: Find LinkedIn URL
                 if company.status == ObjectStatus.COMPLETED:
-                    # Already processed, skip
                     continue
 
                 company.status = ObjectStatus.PROCESSING
                 session.commit()
 
+                # Step 1: Find LinkedIn URL
                 linkedin_url, confidence = await find_company_linkedin(
                     company.name,
                     li_at_cookie=li_at,
@@ -124,7 +113,7 @@ async def _run_scraper_job_async(task, job_id: str):
                     session.commit()
                     continue
 
-                # Step 2: Scrape company profile
+                # Step 2: Scrape company profile (name, employee count, industry, etc.)
                 profile_data = await scrape_company_profile(linkedin_url, li_at, jsessionid)
 
                 company_linkedin = CompanyLinkedIn(
@@ -146,8 +135,112 @@ async def _run_scraper_job_async(task, job_id: str):
 
                 company.status = ObjectStatus.COMPLETED
                 matched += 1
+                session.commit()
 
-                # Step 3: Scrape employees
+            except Exception as e:
+                logger.error(f"Error discovering company '{company.name}': {e}")
+                company.status = ObjectStatus.FAILED
+                session.commit()
+                continue
+
+        # Update job stats
+        job.companies_processed = min(total, job.max_companies_per_launch)
+        job.companies_matched = matched
+        job.companies_not_found = not_found
+        job.status = ObjectStatus.COMPLETED
+        session.commit()
+
+        logger.info(
+            f"Discovery job {job_id} completed: {matched}/{total} companies matched, "
+            f"{not_found} not found"
+        )
+
+    except Exception as e:
+        logger.error(f"Discovery job {job_id} failed: {e}")
+        try:
+            job = session.get(ScraperJob, uuid.UUID(job_id))
+            if job:
+                job.status = ObjectStatus.FAILED
+                job.last_error = str(e)
+                session.commit()
+        except Exception:
+            pass
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Employee Scraping
+# ---------------------------------------------------------------------------
+@celery_app.task(bind=True, name="app.tasks.scraper_tasks.run_employee_scraping")
+def run_employee_scraping(self, job_id: str):
+    """Scrape employees from selected companies using Sales Navigator."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run_employee_scraping_async(self, job_id))
+    finally:
+        loop.close()
+
+
+async def _run_employee_scraping_async(task, job_id: str):
+    """Phase 2: Scrape employees from pre-discovered companies."""
+    from app.models.ontology import (
+        ScraperJob, Company, CompanyLinkedIn, Employee, MatchResult
+    )
+
+    session = _get_sync_session()
+
+    try:
+        job = session.get(ScraperJob, uuid.UUID(job_id))
+        if not job:
+            logger.error(f"Job {job_id} not found")
+            return
+
+        job.status = ObjectStatus.PROCESSING
+        job.last_launched_at = datetime.utcnow()
+        session.commit()
+
+        # Get LinkedIn credentials
+        linkedin_account = job.linkedin_account
+        li_at = linkedin_account.li_at_cookie
+        jsessionid = linkedin_account.jsessionid_cookie
+
+        # Get selected companies (only ones with LinkedIn profiles)
+        selected_ids = job.selected_company_ids or []
+        companies = (
+            session.query(Company)
+            .filter(Company.id.in_([uuid.UUID(cid) for cid in selected_ids]))
+            .all()
+        )
+
+        total = len(companies)
+        employees_scraped = 0
+
+        for i, company in enumerate(companies):
+            task.update_state(
+                state="PROGRESS",
+                meta={
+                    "current": i + 1,
+                    "total": total,
+                    "company": company.name,
+                    "phase": "employee_scraping",
+                },
+            )
+
+            try:
+                # Get the company's LinkedIn profile
+                company_linkedin = (
+                    session.query(CompanyLinkedIn)
+                    .filter(CompanyLinkedIn.company_id == company.id)
+                    .first()
+                )
+                if not company_linkedin:
+                    continue
+
+                linkedin_url = company_linkedin.linkedin_url
+
+                # Scrape employees
                 employees = await scrape_company_employees(
                     linkedin_url,
                     li_at,
@@ -166,7 +259,7 @@ async def _run_scraper_job_async(task, job_id: str):
                     session.add(employee)
                     session.flush()
 
-                    # Step 4: AI role matching (if enabled)
+                    # AI role matching
                     if job.use_ai_matching and job.target_job_titles:
                         is_match, conf, reasoning, matched_role = await evaluate_role_match(
                             employee.job_title,
@@ -189,26 +282,22 @@ async def _run_scraper_job_async(task, job_id: str):
                 session.commit()
 
             except Exception as e:
-                logger.error(f"Error processing company '{company.name}': {e}")
-                company.status = ObjectStatus.FAILED
+                logger.error(f"Error scraping employees for '{company.name}': {e}")
                 session.commit()
                 continue
 
         # Update job stats
-        job.companies_processed = min(total, job.max_companies_per_launch)
-        job.companies_matched = matched
-        job.companies_not_found = not_found
+        job.companies_processed = total
         job.employees_scraped = employees_scraped
         job.status = ObjectStatus.COMPLETED
         session.commit()
 
         logger.info(
-            f"Job {job_id} completed: {matched}/{total} companies matched, "
-            f"{not_found} not found, {employees_scraped} employees scraped"
+            f"Employee scraping job {job_id} completed: {employees_scraped} employees from {total} companies"
         )
 
     except Exception as e:
-        logger.error(f"Job {job_id} failed: {e}")
+        logger.error(f"Employee scraping job {job_id} failed: {e}")
         try:
             job = session.get(ScraperJob, uuid.UUID(job_id))
             if job:
@@ -221,6 +310,31 @@ async def _run_scraper_job_async(task, job_id: str):
         session.close()
 
 
+# ---------------------------------------------------------------------------
+# Legacy: Combined task (kept for backward compatibility with existing jobs)
+# ---------------------------------------------------------------------------
+@celery_app.task(bind=True, name="app.tasks.scraper_tasks.run_scraper_job")
+def run_scraper_job(self, job_id: str):
+    """Route to appropriate task based on job_type."""
+    from app.models.ontology import ScraperJob
+    session = _get_sync_session()
+    try:
+        job = session.get(ScraperJob, uuid.UUID(job_id))
+        if not job:
+            return
+        job_type = job.job_type or "company_discovery"
+    finally:
+        session.close()
+
+    if job_type == "employee_scraping":
+        run_employee_scraping(job_id)
+    else:
+        run_company_discovery(job_id)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled job checker
+# ---------------------------------------------------------------------------
 @celery_app.task(name="app.tasks.scraper_tasks.check_scheduled_jobs")
 def check_scheduled_jobs():
     """Periodic task: check for scheduled jobs that need to run."""

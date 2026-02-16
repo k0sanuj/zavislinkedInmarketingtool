@@ -246,6 +246,13 @@ class ScraperJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255))
 
+    # Job type: "company_discovery" or "employee_scraping"
+    job_type: Mapped[str] = mapped_column(String(50), default="company_discovery")
+    # For employee_scraping jobs: link back to the discovery job
+    parent_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("scraper_jobs.id"), nullable=True)
+    # For employee_scraping: which companies to scrape (list of company UUID strings)
+    selected_company_ids: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     # Link: uses DataSource
     data_source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("data_sources.id"))
     # Link: authenticated_by LinkedInAccount
@@ -280,3 +287,4 @@ class ScraperJob(Base):
     data_source: Mapped["DataSource"] = relationship(back_populates="scraper_jobs")
     linkedin_account: Mapped["LinkedInAccount"] = relationship(back_populates="scraper_jobs")
     schedule: Mapped[Optional["Schedule"]] = relationship(back_populates="scraper_jobs")
+    parent_job: Mapped[Optional["ScraperJob"]] = relationship(remote_side="ScraperJob.id")

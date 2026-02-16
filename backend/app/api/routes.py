@@ -27,12 +27,13 @@ from app.core.ontology import ObjectStatus
 from app.schemas.schemas import (
     LinkedInAccountCreate, LinkedInAccountResponse,
     DataSourceCreate, DataSourceResponse,
-    CompanyResponse, EmployeeResponse,
-    ScraperJobCreate, ScraperJobResponse, ScraperJobLaunchResponse,
-    JobSummary, RoleMatchRequest, RoleMatchSuggestion,
+    CompanyResponse, CompanyDetailResponse, EmployeeResponse,
+    ScraperJobCreate, CompanyDiscoveryCreate, EmployeeScrapingCreate,
+    ScraperJobResponse, ScraperJobLaunchResponse,
+    JobSummary, RoleMatchRequest, GoalBasedRoleRequest, RoleMatchSuggestion,
 )
 from app.services import job_orchestrator
-from app.services.ai_matcher import suggest_related_roles
+from app.services.ai_matcher import suggest_related_roles, suggest_roles_from_goal
 from app.services.google_sheets import get_sheet_tabs, get_sheet_columns, SCOPES
 
 router = APIRouter()
@@ -356,10 +357,33 @@ async def get_google_sheet_columns(url: str, tab: Optional[str] = None, db: Asyn
 async def create_scraper_job(
     data: ScraperJobCreate, db: AsyncSession = Depends(get_db)
 ):
-    """Create a new scraper job configuration."""
+    """Create a new scraper job configuration (legacy)."""
     job = await job_orchestrator.create_scraper_job(db, data)
     await db.refresh(job)
     return job
+
+
+@router.post("/scraper-jobs/company-discovery", response_model=ScraperJobResponse)
+async def create_company_discovery(
+    data: CompanyDiscoveryCreate, db: AsyncSession = Depends(get_db)
+):
+    """Phase 1: Create a company discovery job."""
+    job = await job_orchestrator.create_company_discovery_job(db, data)
+    await db.refresh(job)
+    return job
+
+
+@router.post("/scraper-jobs/employee-scraping", response_model=ScraperJobResponse)
+async def create_employee_scraping(
+    data: EmployeeScrapingCreate, db: AsyncSession = Depends(get_db)
+):
+    """Phase 2: Create an employee scraping job from selected companies."""
+    try:
+        job = await job_orchestrator.create_employee_scraping_job(db, data)
+        await db.refresh(job)
+        return job
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/scraper-jobs", response_model=List[ScraperJobResponse])
@@ -376,6 +400,19 @@ async def get_scraper_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.get("/scraper-jobs/{job_id}/companies", response_model=List[CompanyDetailResponse])
+async def get_job_companies(
+    job_id: uuid.UUID,
+    filter: str = "all",
+    db: AsyncSession = Depends(get_db),
+):
+    """Get companies for a job. filter: all, with_linkedin, without_linkedin."""
+    try:
+        return await job_orchestrator.get_job_companies(db, job_id, filter)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/scraper-jobs/{job_id}/launch", response_model=ScraperJobLaunchResponse)
@@ -461,6 +498,13 @@ async def get_job_employees(
 async def ai_suggest_roles(data: RoleMatchRequest):
     """Use AI to suggest related job titles for targeting."""
     roles, reasoning = await suggest_related_roles(data.job_titles)
+    return RoleMatchSuggestion(suggested_roles=roles, reasoning=reasoning)
+
+
+@router.post("/ai/suggest-roles-from-goal", response_model=RoleMatchSuggestion)
+async def ai_suggest_roles_from_goal(data: GoalBasedRoleRequest):
+    """AI suggests job titles based on user's described goals."""
+    roles, reasoning = await suggest_roles_from_goal(data.goal_description, data.industry)
     return RoleMatchSuggestion(suggested_roles=roles, reasoning=reasoning)
 
 

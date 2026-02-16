@@ -75,6 +75,25 @@ class CompanyResponse(BaseModel):
         from_attributes = True
 
 
+class CompanyDetailResponse(BaseModel):
+    """Rich company response with all LinkedIn profile data."""
+    id: uuid.UUID
+    name: str
+    original_input: str
+    status: str
+    linkedin_url: Optional[str] = None
+    name_on_linkedin: Optional[str] = None
+    match_confidence: Optional[str] = None
+    employee_count: Optional[int] = None
+    industry: Optional[str] = None
+    headquarters: Optional[str] = None
+    website: Optional[str] = None
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class CompanySearchResult(BaseModel):
     company_name: str
     linkedin_url: Optional[str]
@@ -120,9 +139,31 @@ class ScraperJobCreate(BaseModel):
     schedule_times_per_day: int = 1
 
 
+class CompanyDiscoveryCreate(BaseModel):
+    """Create a company discovery job (Phase 1)."""
+    name: str
+    data_source_id: uuid.UUID
+    linkedin_account_id: uuid.UUID
+    max_companies_per_launch: int = 50
+
+
+class EmployeeScrapingCreate(BaseModel):
+    """Create an employee scraping job (Phase 2) from discovered companies."""
+    name: str
+    parent_job_id: uuid.UUID
+    linkedin_account_id: uuid.UUID
+    selected_company_ids: List[uuid.UUID]
+    target_job_titles: List[str]
+    max_employees_per_company: int = 30
+    use_ai_matching: bool = True
+    ai_matching_prompt: Optional[str] = None
+
+
 class ScraperJobResponse(BaseModel):
     id: uuid.UUID
     name: str
+    job_type: Optional[str] = "company_discovery"
+    parent_job_id: Optional[uuid.UUID] = None
     status: str
     is_enabled: bool
     companies_processed: int
@@ -154,6 +195,12 @@ class RoleMatchRequest(BaseModel):
         default=None,
         description="Custom prompt for AI matching, e.g. 'Find clinic administrators and practice managers'"
     )
+
+
+class GoalBasedRoleRequest(BaseModel):
+    """AI suggests roles based on user's described goals."""
+    goal_description: str = Field(description="What the user wants to achieve, e.g. 'I want to reach decision makers at dental clinics who handle purchasing'")
+    industry: Optional[str] = None
 
 
 class RoleMatchSuggestion(BaseModel):
