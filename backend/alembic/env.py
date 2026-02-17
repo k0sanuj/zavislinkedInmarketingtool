@@ -1,5 +1,6 @@
 """Alembic environment configuration."""
 
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -13,6 +14,13 @@ from app.models.ontology import (  # noqa: F401
 )
 
 config = context.config
+
+# Override sqlalchemy.url from environment variable if available
+# This ensures Docker containers use the correct hostname (db vs localhost)
+db_url = os.getenv("DATABASE_URL_SYNC")
+if db_url:
+    config.set_main_option("sqlalchemy.url", db_url)
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
